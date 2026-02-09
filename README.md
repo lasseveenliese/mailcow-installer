@@ -90,23 +90,20 @@ Note: mailcow mentions that on some firewalls (especially stateless firewalls), 
 
 ## Reset
 
-Optionally, the script can stop existing mailcow containers or remove the complete directory (including data), which is destructive.
+If mailcow already exists in the target path (default: `/opt/mailcow-dockerized`), the script intentionally exits unless a reset mode is specified.
 
-## Local Secret Scan Before Commit
+Reset options:
 
-This repository includes a `gitleaks` pre-commit scan that aborts the commit if secrets are detected.
-Requirement: `gitleaks` must be installed locally.
-
-Setup (if not active locally yet):
+1. Container reset (keeps data):
 
 ```bash
-./scripts/setup-git-hooks.sh
+sudo ./install-mailcow-ubuntu24.sh ... --purge-existing containers
 ```
 
-Bypass (intentional, one-time):
+2. Full reset (destructive, also removes `data/`):
 
 ```bash
-git commit --no-verify
-# or
-SKIP_GITLEAKS=1 git commit -m "..."
+sudo ./install-mailcow-ubuntu24.sh ... --purge-existing full
 ```
+
+Before using `--purge-existing full`, verify your backups because the directory is removed completely.

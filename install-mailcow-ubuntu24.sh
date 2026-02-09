@@ -16,22 +16,27 @@ SCRIPT_VERSION="1.0"
 
 MAILCOW_DIR="/opt/mailcow-dockerized"
 ADMIN_USER="admin"
-TZ_DEFAULT="Europe/Berlin"
+ADMIN_USER_FLAG_SET="false"   # true|false (ob --admin-user explizit gesetzt wurde)
+TZ_FALLBACK_DEFAULT="UTC"
 REBOOT_TIME_DEFAULT="04:00"
 MAILCOW_UPDATE_TIME_DEFAULT="03:30"
 
 FQDN=""
-TZ="$TZ_DEFAULT"
+TZ="$TZ_FALLBACK_DEFAULT"
+TZ_FLAG_SET="false"           # true|false (ob --tz explizit gesetzt wurde)
 SSH_PUBKEY=""
 ENABLE_UFW="yes"              # yes|no
 UFW_FLAG_SET="false"          # true|false (ob --ufw explizit gesetzt wurde)
 SSH_ALLOW_CIDR=""             # z.B. "203.0.113.10/32"
 AUTO_REBOOT="true"            # true|false
+AUTO_REBOOT_FLAG_SET="false"  # true|false (ob --auto-reboot explizit gesetzt wurde)
 REBOOT_TIME="$REBOOT_TIME_DEFAULT"
 MAILCOW_AUTOUPDATE="true"     # true|false
+MAILCOW_AUTOUPDATE_FLAG_SET="false" # true|false (ob --mailcow-autoupdate explizit gesetzt wurde)
 MAILCOW_UPDATE_TIME="$MAILCOW_UPDATE_TIME_DEFAULT"
 RUN_HELLO_WORLD="false"       # true|false
 PASSWORDLESS_SUDO="false"     # true|false
+ADMIN_LOGIN_PASSWORD="auto"   # auto|true|false
 MAILCOW_BRANCH="stable"
 SKIP_PING_CHECK="false"       # true|false (für mailcow update.sh)
 NON_INTERACTIVE="false"       # true|false
@@ -55,8 +60,8 @@ Required (interactive if missing, außer --non-interactive):
 
 Optional:
   --mailcow-dir <dir>                      Default: $MAILCOW_DIR
-  --admin-user <name>                      Default: $ADMIN_USER
-  --tz <Area/City>                         Default: $TZ_DEFAULT
+  --admin-user <name>                      Default: $ADMIN_USER (interaktiv: Enter übernimmt Default)
+  --tz <Area/City>                         Default: Server-Timezone (Fallback: $TZ_FALLBACK_DEFAULT)
   --ssh-allow-cidr <CIDR[,CIDR...]>        Optional; 'none' deaktiviert Einschränkung. ACHTUNG: falscher Wert kann SSH-Lockout verursachen
   --ufw yes|no                             Ohne Flag: interaktiv Abfrage (Enter=yes), non-interactive => yes
   --passwordless-sudo true|false           Default: $PASSWORDLESS_SUDO
@@ -126,6 +131,20 @@ prompt_yes_no() {
   done
 }
 
+prompt_true_false() {
+  local var_name="$1" prompt="$2" def="$3"
+  local val=""
+  while true; do
+    read -r -p "$prompt [${def}]: " val || true
+    [[ -z "$val" ]] && val="$def"
+    case "$val" in
+      y|Y|yes|YES|true|TRUE)   printf -v "$var_name" "true";  return 0;;
+      n|N|no|NO|false|FALSE)   printf -v "$var_name" "false"; return 0;;
+      *) echo "Bitte yes/no oder true/false eingeben.";;
+    esac
+  done
+}
+
 validate_hhmm() {
   local t="$1"
   [[ "$t" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]
@@ -145,6 +164,30 @@ detect_ssh_client_cidr() {
     fi
   fi
   echo ""
+}
+
+detect_server_timezone() {
+  local tz=""
+  local link_target=""
+
+  if have_cmd timedatectl; then
+    tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$tz" && -f /etc/timezone ]]; then
+    tz="$(head -n1 /etc/timezone 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$tz" && -L /etc/localtime ]]; then
+    link_target="$(readlink /etc/localtime 2>/dev/null || true)"
+    if [[ "$link_target" == */zoneinfo/* ]]; then
+      tz="${link_target#*/zoneinfo/}"
+    fi
+  fi
+
+  tz="$(trim_value "$tz")"
+  [[ -n "$tz" && "$tz" != "n/a" ]] || return 1
+  echo "$tz"
 }
 
 normalize_ssh_allow_cidr_value() {
@@ -168,6 +211,18 @@ print_bold_warning() {
     printf '\033[1m%s\033[0m\n' "$text"
   else
     printf '%s\n' "$text"
+  fi
+}
+
+init_runtime_defaults() {
+  if [[ "$TZ_FLAG_SET" == "false" ]]; then
+    local detected_tz=""
+    detected_tz="$(detect_server_timezone || true)"
+    if [[ -n "$detected_tz" ]]; then
+      TZ="$detected_tz"
+    else
+      TZ="$TZ_FALLBACK_DEFAULT"
+    fi
   fi
 }
 
@@ -208,6 +263,37 @@ validate_mailcow_dir() {
   MAILCOW_DIR="$normalized"
 }
 
+validate_admin_user_name() {
+  local user="$1"
+  [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
+user_has_password() {
+  local user="$1"
+  local pw_state=""
+  id "$user" >/dev/null 2>&1 || return 1
+  pw_state="$(passwd -S "$user" | awk '{print $2}' || true)"
+  [[ "$pw_state" == "P" ]]
+}
+
+check_noninteractive_consistency() {
+  if [[ "$NON_INTERACTIVE" != "true" ]]; then
+    return 0
+  fi
+
+  if [[ "$ADMIN_LOGIN_PASSWORD" == "true" ]]; then
+    if user_has_password "$ADMIN_USER"; then
+      log "non-interactive: bestehendes Login-Passwort für $ADMIN_USER erkannt"
+    else
+      die "--non-interactive mit Login-Passwort erfordert ein bereits gesetztes Passwort für ${ADMIN_USER}. Alternativen: interaktiv ausführen oder --passwordless-sudo true."
+    fi
+  fi
+
+  if [[ "$ADMIN_LOGIN_PASSWORD" == "false" && "$PASSWORDLESS_SUDO" != "true" ]]; then
+    die "--non-interactive ohne Login-Passwort erfordert --passwordless-sudo true."
+  fi
+}
+
 validate_ssh_public_key() {
   local key="$1"
   [[ -n "$key" ]] || return 1
@@ -217,7 +303,11 @@ validate_ssh_public_key() {
 }
 
 validate_inputs() {
+  is_true_or_false "$ADMIN_USER_FLAG_SET" || die "Ungültiger interner Zustand: ADMIN_USER_FLAG_SET=$ADMIN_USER_FLAG_SET"
+  is_true_or_false "$TZ_FLAG_SET" || die "Ungültiger interner Zustand: TZ_FLAG_SET=$TZ_FLAG_SET"
   is_true_or_false "$UFW_FLAG_SET" || die "Ungültiger interner Zustand: UFW_FLAG_SET=$UFW_FLAG_SET"
+  is_true_or_false "$AUTO_REBOOT_FLAG_SET" || die "Ungültiger interner Zustand: AUTO_REBOOT_FLAG_SET=$AUTO_REBOOT_FLAG_SET"
+  is_true_or_false "$MAILCOW_AUTOUPDATE_FLAG_SET" || die "Ungültiger interner Zustand: MAILCOW_AUTOUPDATE_FLAG_SET=$MAILCOW_AUTOUPDATE_FLAG_SET"
   [[ "$ENABLE_UFW" == "yes" || "$ENABLE_UFW" == "no" ]] || die "Ungültig: --ufw $ENABLE_UFW"
   is_true_or_false "$PASSWORDLESS_SUDO" || die "Ungültig: --passwordless-sudo $PASSWORDLESS_SUDO"
   is_true_or_false "$AUTO_REBOOT" || die "Ungültig: --auto-reboot $AUTO_REBOOT"
@@ -226,14 +316,24 @@ validate_inputs() {
   is_true_or_false "$SKIP_PING_CHECK" || die "Ungültig: --skip-ping-check $SKIP_PING_CHECK"
   is_true_or_false "$NON_INTERACTIVE" || die "Ungültig: --non-interactive/--interactive Konfiguration"
 
-  validate_hhmm "$REBOOT_TIME" || die "Ungültige reboot-time: $REBOOT_TIME"
-  validate_hhmm "$MAILCOW_UPDATE_TIME" || die "Ungültige mailcow-update-time: $MAILCOW_UPDATE_TIME"
+  if [[ "$AUTO_REBOOT" == "true" ]]; then
+    validate_hhmm "$REBOOT_TIME" || die "Ungültige reboot-time: $REBOOT_TIME"
+  fi
+  if [[ "$MAILCOW_AUTOUPDATE" == "true" ]]; then
+    validate_hhmm "$MAILCOW_UPDATE_TIME" || die "Ungültige mailcow-update-time: $MAILCOW_UPDATE_TIME"
+  fi
 
   case "$PURGE_EXISTING" in
     no|containers|full) ;;
     *) die "Ungültig: --purge-existing $PURGE_EXISTING" ;;
   esac
 
+  case "$ADMIN_LOGIN_PASSWORD" in
+    auto|true|false) ;;
+    *) die "Ungültiger interner Zustand: ADMIN_LOGIN_PASSWORD=$ADMIN_LOGIN_PASSWORD" ;;
+  esac
+
+  validate_admin_user_name "$ADMIN_USER" || die "Ungültiger Admin-Username: $ADMIN_USER (erlaubt: [a-z_][a-z0-9_-]{0,31})"
   [[ "$MAILCOW_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || die "Ungültiger Branch-Name: $MAILCOW_BRANCH"
   [[ "$FQDN" =~ ^[A-Za-z0-9.-]+$ ]] || die "Ungültiger FQDN: $FQDN"
   validate_ssh_public_key "$SSH_PUBKEY" || die "Ungültiger --ssh-pubkey. Erwarte eine komplette OpenSSH-Public-Key-Zeile (z.B. ssh-ed25519 AAAA... user@local). Wenn ein Pfad genutzt wird, ist er server-lokal."
@@ -324,14 +424,14 @@ install_base_packages() {
 
 create_admin_user() {
   local user="$1"
-  log "User: $user (SSH-only, ohne Passwort) anlegen/konfigurieren"
+  log "User: $user (SSH-only) anlegen/konfigurieren"
 
   if id "$user" >/dev/null 2>&1; then
     log "User existiert bereits: $user (wird aktualisiert)"
   else
     adduser --disabled-password --gecos "" "$user"
-    usermod -aG sudo "$user"
   fi
+  usermod -aG sudo "$user"
 
   # SSH Key setzen
   local home_dir
@@ -342,12 +442,25 @@ create_admin_user() {
   chmod 0600 "$home_dir/.ssh/authorized_keys"
 
   local sudo_file="/etc/sudoers.d/90-${user}-nopasswd"
+  local pw_state
 
-  if [[ "$PASSWORDLESS_SUDO" == "true" ]]; then
-    # Kein Passwort nötig: Account-Passwort wird gesperrt, Privilege Escalation nur über SSH-Key-Session.
+  if [[ "$ADMIN_LOGIN_PASSWORD" == "true" ]]; then
+    pw_state="$(passwd -S "$user" | awk '{print $2}')"
+    if [[ "$NON_INTERACTIVE" == "true" ]]; then
+      [[ "$pw_state" == "P" ]] || die "non-interactive: Login-Passwort für ${user} fehlt."
+      log "Login-Passwort für $user ist bereits gesetzt (non-interactive)."
+    else
+      log "Login-Passwort für $user setzen/aktualisieren"
+      passwd "$user"
+    fi
+    passwd -u "$user" >/dev/null 2>&1 || true
+  else
     passwd -d "$user" >/dev/null 2>&1 || true
     passwd -l "$user" >/dev/null 2>&1 || true
+    log "Login-Passwort für $user ist deaktiviert."
+  fi
 
+  if [[ "$PASSWORDLESS_SUDO" == "true" ]]; then
     log "Sudo: Passwortlos für $user aktivieren (NOPASSWD)"
     cat >"$sudo_file" <<EOF
 ${user} ALL=(ALL) NOPASSWD:ALL
@@ -356,16 +469,11 @@ EOF
     visudo -cf "$sudo_file" >/dev/null
   else
     rm -f "$sudo_file"
-    local pw_state
-    pw_state="$(passwd -S "$user" | awk '{print $2}')"
-    if [[ "$pw_state" != "P" ]]; then
-      if [[ -t 0 ]]; then
-        log "Sudo mit Passwort ist aktiv. Bitte jetzt ein lokales Passwort für ${user} setzen (wird NICHT für SSH verwendet)."
-        passwd "$user"
-      else
-        die "PASSWORDLESS_SUDO=false erfordert ein gesetztes Passwort für ${user}. Starte interaktiv oder nutze --passwordless-sudo true."
-      fi
+    if [[ "$ADMIN_LOGIN_PASSWORD" != "true" ]]; then
+      die "PASSWORDLESS_SUDO=false erfordert ein gesetztes Login-Passwort für ${user}."
     fi
+    pw_state="$(passwd -S "$user" | awk '{print $2}')"
+    [[ "$pw_state" == "P" ]] || die "Für PASSWORDLESS_SUDO=false muss ein Passwort für ${user} gesetzt sein."
     log "Sudo: Für $user ist Passwort erforderlich (kein NOPASSWD)."
   fi
 }
@@ -489,9 +597,10 @@ install_mailcow() {
   cd "$MAILCOW_DIR"
 
   # Konfig erzeugen (mailcow-Doku empfiehlt generate_config.sh)
-  # Wir setzen FQDN und Branch vorab, damit weniger interaktiv ist.
+  # Wir setzen FQDN, Branch und TZ vorab, damit weniger interaktiv ist.
   export MAILCOW_HOSTNAME="$FQDN"
   export MAILCOW_BRANCH="$MAILCOW_BRANCH"
+  export MAILCOW_TZ="$TZ"
 
   log "mailcow: generate_config.sh ausführen"
   ./generate_config.sh
@@ -668,8 +777,6 @@ print_external_firewall_instructions() {
   cat <<EOF
 
 --- Externe Netzwerk-Firewall ---
-Empfohlen: SSH nur von deiner IP/CIDR erlauben, alles andere zu.
-
 Inbound TCP öffnen (mailcow laut Doku, IPv4 und IPv6 falls IPv6 genutzt wird):
   25   SMTP
   80   HTTP (ACME)
@@ -682,7 +789,7 @@ Inbound TCP öffnen (mailcow laut Doku, IPv4 und IPv6 falls IPv6 genutzt wird):
   995  POP3S
   4190 Sieve
 
-Inbound TCP 22 (SSH): nur von deinem Management-CIDR (z.B. ${SSH_ALLOW_CIDR:-DEINE_IP/32 oder DEIN_IPV6_PREFIX/128})
+Empfohlen: Inbound TCP 22 (SSH) nur von deinem Management-CIDR erlauben (z.B. ${SSH_ALLOW_CIDR:-DEINE_IP/32 oder DEIN_IPV6_PREFIX/128})
 
 Wichtig-Hinweis aus mailcow-Doku:
 - Zusätzlich kann eine Regel nötig sein, um eingehende TCP ACK und UDP für Ports 1024-65535 zu erlauben.
@@ -727,15 +834,15 @@ parse_args() {
       --non-interactive) NON_INTERACTIVE="true"; shift ;;
       --fqdn) FQDN="$2"; shift 2 ;;
       --mailcow-dir) MAILCOW_DIR="$2"; shift 2 ;;
-      --admin-user) ADMIN_USER="$2"; shift 2 ;;
-      --tz) TZ="$2"; shift 2 ;;
+      --admin-user) ADMIN_USER="$2"; ADMIN_USER_FLAG_SET="true"; shift 2 ;;
+      --tz) TZ="$2"; TZ_FLAG_SET="true"; shift 2 ;;
       --ssh-pubkey) SSH_PUBKEY="$(read_pubkey "$2")"; shift 2 ;;
       --ssh-allow-cidr) SSH_ALLOW_CIDR="$(normalize_ssh_allow_cidr_value "$2")"; shift 2 ;;
       --ufw) ENABLE_UFW="$2"; UFW_FLAG_SET="true"; shift 2 ;;
       --passwordless-sudo) PASSWORDLESS_SUDO="$2"; shift 2 ;;
-      --auto-reboot) AUTO_REBOOT="$2"; shift 2 ;;
+      --auto-reboot) AUTO_REBOOT="$2"; AUTO_REBOOT_FLAG_SET="true"; shift 2 ;;
       --reboot-time) REBOOT_TIME="$2"; shift 2 ;;
-      --mailcow-autoupdate) MAILCOW_AUTOUPDATE="$2"; shift 2 ;;
+      --mailcow-autoupdate) MAILCOW_AUTOUPDATE="$2"; MAILCOW_AUTOUPDATE_FLAG_SET="true"; shift 2 ;;
       --mailcow-update-time) MAILCOW_UPDATE_TIME="$2"; shift 2 ;;
       --skip-ping-check) SKIP_PING_CHECK="$2"; shift 2 ;;
       --hello-world) RUN_HELLO_WORLD="$2"; shift 2 ;;
@@ -761,8 +868,27 @@ interactive_missing() {
     fi
 
     SSH_ALLOW_CIDR="$(normalize_ssh_allow_cidr_value "$SSH_ALLOW_CIDR")"
+    if [[ "$ADMIN_LOGIN_PASSWORD" == "auto" ]]; then
+      if [[ "$PASSWORDLESS_SUDO" == "true" ]]; then
+        ADMIN_LOGIN_PASSWORD="false"
+      else
+        ADMIN_LOGIN_PASSWORD="true"
+      fi
+    fi
 
     return 0
+  fi
+
+  if [[ "$ADMIN_USER_FLAG_SET" == "false" ]]; then
+    while true; do
+      prompt_default ADMIN_USER "Admin-Benutzername (Option: <name>, Enter=admin)" "$ADMIN_USER"
+      ADMIN_USER="$(trim_value "$ADMIN_USER")"
+      [[ -z "$ADMIN_USER" ]] && ADMIN_USER="admin"
+      if validate_admin_user_name "$ADMIN_USER"; then
+        break
+      fi
+      echo "Ungültiger Username. Erlaubt: [a-z_][a-z0-9_-]{0,31}"
+    done
   fi
 
   if [[ -z "$FQDN" ]]; then
@@ -778,6 +904,15 @@ interactive_missing() {
     read -r -p "SSH Public Key für admin (Optionen: <Keyline vom lokalen Rechner> oder <Pfad auf Server>): " in || true
     [[ -n "$in" ]] || die "--ssh-pubkey ist erforderlich"
     SSH_PUBKEY="$(read_pubkey "$in")"
+  fi
+
+  if [[ "$ADMIN_LOGIN_PASSWORD" == "auto" ]]; then
+    prompt_true_false ADMIN_LOGIN_PASSWORD "Passwort für den Admin-Login setzen? (Optionen: yes/no, empfohlen)" "yes"
+  fi
+  if [[ "$ADMIN_LOGIN_PASSWORD" == "false" && "$PASSWORDLESS_SUDO" == "false" ]]; then
+    warn "Ohne Login-Passwort und ohne passwordless sudo wäre kein sudo möglich."
+    prompt_true_false PASSWORDLESS_SUDO "passwordless sudo aktivieren, um Lockout zu vermeiden? (Optionen: yes/no)" "yes"
+    [[ "$PASSWORDLESS_SUDO" == "true" ]] || die "Abbruch zur Vermeidung eines Lockouts: setze Login-Passwort oder aktiviere passwordless sudo."
   fi
 
   if [[ -z "$SSH_ALLOW_CIDR" ]]; then
@@ -833,12 +968,23 @@ interactive_missing() {
     prompt_yes_no ENABLE_UFW "UFW verwenden? (Optionen: yes/no, empfohlen)" "yes"
   fi
 
-  prompt_default TZ "Timezone (Option: <Area/City>, z.B. UTC)" "$TZ"
-  prompt_default REBOOT_TIME "Auto-Reboot Uhrzeit (Option: HH:MM, nur wenn AUTO_REBOOT=true)" "$REBOOT_TIME"
-  validate_hhmm "$REBOOT_TIME" || die "Ungültige reboot-time: $REBOOT_TIME"
+  if [[ "$AUTO_REBOOT_FLAG_SET" == "false" ]]; then
+    prompt_true_false AUTO_REBOOT "Auto-Reboot aktivieren? (Optionen: yes/no, empfohlen)" "yes"
+  fi
+  if [[ "$MAILCOW_AUTOUPDATE_FLAG_SET" == "false" ]]; then
+    prompt_true_false MAILCOW_AUTOUPDATE "mailcow Auto-Update aktivieren? (Optionen: yes/no, empfohlen)" "yes"
+  fi
 
-  prompt_default MAILCOW_UPDATE_TIME "mailcow Auto-Update Uhrzeit (Option: HH:MM, nur wenn MAILCOW_AUTOUPDATE=true)" "$MAILCOW_UPDATE_TIME"
-  validate_hhmm "$MAILCOW_UPDATE_TIME" || die "Ungültige mailcow-update-time: $MAILCOW_UPDATE_TIME"
+  prompt_default TZ "Timezone (Option: <Area/City>, z.B. UTC oder Europe/Berlin)" "$TZ"
+  if [[ "$AUTO_REBOOT" == "true" ]]; then
+    prompt_default REBOOT_TIME "Auto-Reboot Uhrzeit (Option: HH:MM, nur wenn AUTO_REBOOT=true)" "$REBOOT_TIME"
+    validate_hhmm "$REBOOT_TIME" || die "Ungültige reboot-time: $REBOOT_TIME"
+  fi
+
+  if [[ "$MAILCOW_AUTOUPDATE" == "true" ]]; then
+    prompt_default MAILCOW_UPDATE_TIME "mailcow Auto-Update Uhrzeit (Option: HH:MM, nur wenn MAILCOW_AUTOUPDATE=true)" "$MAILCOW_UPDATE_TIME"
+    validate_hhmm "$MAILCOW_UPDATE_TIME" || die "Ungültige mailcow-update-time: $MAILCOW_UPDATE_TIME"
+  fi
 }
 
 normalize_defaults_after_prompt() {
@@ -848,12 +994,14 @@ normalize_defaults_after_prompt() {
 main() {
   require_root
   parse_args "$@"
+  init_runtime_defaults
 
   is_ubuntu_2404 || warn "Nicht Ubuntu 24.04 erkannt. Das Skript ist dafür ausgelegt."
 
   interactive_missing
   normalize_defaults_after_prompt
   validate_inputs
+  check_noninteractive_consistency
 
   log "Konfiguration: FQDN=$FQDN, ADMIN_USER=$ADMIN_USER, TZ=$TZ, UFW=$ENABLE_UFW, BRANCH=$MAILCOW_BRANCH, NON_INTERACTIVE=$NON_INTERACTIVE"
   log "Auto-Reboot: $AUTO_REBOOT @ $REBOOT_TIME; mailcow Auto-Update: $MAILCOW_AUTOUPDATE @ $MAILCOW_UPDATE_TIME"
