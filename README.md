@@ -65,3 +65,22 @@ Note: mailcow mentions that on some firewalls (especially stateless firewalls), 
 ## Reset
 
 Optionally, the script can stop existing mailcow containers or remove the complete directory (including data), which is destructive.
+
+## Local Secret Scan Before Commit
+
+This repository includes a `gitleaks` pre-commit scan that aborts the commit if secrets are detected.
+Requirement: `gitleaks` must be installed locally.
+
+Setup (if not active locally yet):
+
+```bash
+./scripts/setup-git-hooks.sh
+```
+
+Bypass (intentional, one-time):
+
+```bash
+git commit --no-verify
+# or
+SKIP_GITLEAKS=1 git commit -m "..."
+```
