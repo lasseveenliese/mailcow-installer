@@ -57,7 +57,7 @@ Optional:
   --mailcow-dir <dir>                      Default: $MAILCOW_DIR
   --admin-user <name>                      Default: $ADMIN_USER
   --tz <Area/City>                         Default: $TZ_DEFAULT
-  --ssh-allow-cidr <CIDR[,CIDR...]>        Default: auto-detect from SSH_CONNECTION (falls möglich); ACHTUNG: falscher Wert kann SSH-Lockout verursachen
+  --ssh-allow-cidr <CIDR[,CIDR...]>        Optional; 'none' deaktiviert Einschränkung. ACHTUNG: falscher Wert kann SSH-Lockout verursachen
   --ufw yes|no                             Ohne Flag: interaktiv Abfrage (Enter=yes), non-interactive => yes
   --passwordless-sudo true|false           Default: $PASSWORDLESS_SUDO
   --auto-reboot true|false                 Default: $AUTO_REBOOT
@@ -107,6 +107,11 @@ prompt_default() {
   printf -v "$var_name" '%s' "$val"
 }
 
+trim_value() {
+  local in="$1"
+  printf '%s' "$in" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 prompt_yes_no() {
   local var_name="$1" prompt="$2" def="$3"
   local val=""
@@ -140,6 +145,30 @@ detect_ssh_client_cidr() {
     fi
   fi
   echo ""
+}
+
+normalize_ssh_allow_cidr_value() {
+  local raw="$1"
+  local trimmed
+  local lower
+
+  trimmed="$(trim_value "$raw")"
+  lower="$(printf '%s' "$trimmed" | tr '[:upper:]' '[:lower:]')"
+
+  case "$lower" in
+    ""|none|disable|disabled|off|open|any) echo ""; return 0 ;;
+  esac
+
+  echo "$trimmed"
+}
+
+print_bold_warning() {
+  local text="$1"
+  if [[ -t 1 ]]; then
+    printf '\033[1m%s\033[0m\n' "$text"
+  else
+    printf '%s\n' "$text"
+  fi
 }
 
 validate_cidr() {
@@ -211,8 +240,6 @@ validate_inputs() {
 
   if [[ -n "$SSH_ALLOW_CIDR" ]]; then
     validate_cidr_list "$SSH_ALLOW_CIDR" || die "Ungültig: --ssh-allow-cidr (erwarte CIDR oder CSV-Liste aus CIDRs)"
-  elif [[ "$ENABLE_UFW" == "yes" ]]; then
-    die "UFW ist aktiv, aber --ssh-allow-cidr ist leer und konnte nicht automatisch erkannt werden"
   fi
 
   validate_mailcow_dir
@@ -228,7 +255,7 @@ read_pubkey() {
     key="$in"
   fi
 
-  key="$(printf '%s' "$key" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  key="$(trim_value "$key")"
   echo "$key"
 }
 
@@ -559,14 +586,17 @@ setup_ufw_and_docker_user_rules() {
   ufw default deny incoming
   ufw default allow outgoing
 
-  [[ -n "$SSH_ALLOW_CIDR" ]] || die "UFW ist aktiv, aber --ssh-allow-cidr fehlt"
-
-  local IFS=','
-  local cidr=""
-  for cidr in $SSH_ALLOW_CIDR; do
-    cidr="${cidr//[[:space:]]/}"
-    ufw allow from "$cidr" to any port 22 proto tcp
-  done
+  if [[ -n "$SSH_ALLOW_CIDR" ]]; then
+    local IFS=','
+    local cidr=""
+    for cidr in $SSH_ALLOW_CIDR; do
+      cidr="${cidr//[[:space:]]/}"
+      ufw allow from "$cidr" to any port 22 proto tcp
+    done
+  else
+    warn "SSH CIDR Einschränkung ist deaktiviert: SSH (22/tcp) wird global erlaubt."
+    ufw allow 22/tcp
+  fi
 
   for p in "${ports[@]}"; do
     ufw allow "${p}/tcp"
@@ -700,7 +730,7 @@ parse_args() {
       --admin-user) ADMIN_USER="$2"; shift 2 ;;
       --tz) TZ="$2"; shift 2 ;;
       --ssh-pubkey) SSH_PUBKEY="$(read_pubkey "$2")"; shift 2 ;;
-      --ssh-allow-cidr) SSH_ALLOW_CIDR="$2"; shift 2 ;;
+      --ssh-allow-cidr) SSH_ALLOW_CIDR="$(normalize_ssh_allow_cidr_value "$2")"; shift 2 ;;
       --ufw) ENABLE_UFW="$2"; UFW_FLAG_SET="true"; shift 2 ;;
       --passwordless-sudo) PASSWORDLESS_SUDO="$2"; shift 2 ;;
       --auto-reboot) AUTO_REBOOT="$2"; shift 2 ;;
@@ -730,48 +760,89 @@ interactive_missing() {
       SSH_ALLOW_CIDR="$(detect_ssh_client_cidr)"
     fi
 
+    SSH_ALLOW_CIDR="$(normalize_ssh_allow_cidr_value "$SSH_ALLOW_CIDR")"
+
     return 0
   fi
 
   if [[ -z "$FQDN" ]]; then
-    prompt_default FQDN "MAILCOW FQDN (z.B. mail.example.org)" ""
+    while [[ -z "$FQDN" ]]; do
+      read -r -p "MAILCOW FQDN (Option: <mail.example.org>): " FQDN || true
+      FQDN="$(trim_value "$FQDN")"
+    done
     [[ -n "$FQDN" ]] || die "--fqdn ist erforderlich"
   fi
 
   if [[ -z "$SSH_PUBKEY" ]]; then
     local in=""
-    read -r -p "SSH Public Key für admin (Key vom lokalen Rechner einfügen): " in || true
+    read -r -p "SSH Public Key für admin (Optionen: <Keyline vom lokalen Rechner> oder <Pfad auf Server>): " in || true
     [[ -n "$in" ]] || die "--ssh-pubkey ist erforderlich"
     SSH_PUBKEY="$(read_pubkey "$in")"
   fi
 
   if [[ -z "$SSH_ALLOW_CIDR" ]]; then
-    SSH_ALLOW_CIDR="$(detect_ssh_client_cidr)"
-    if [[ -n "$SSH_ALLOW_CIDR" ]]; then
-      prompt_default SSH_ALLOW_CIDR "SSH erlauben von CIDR (CSV möglich)" "$SSH_ALLOW_CIDR"
-    else
-      while [[ -z "$SSH_ALLOW_CIDR" ]]; do
-        read -r -p "SSH erlauben von CIDR (erforderlich, z.B. 203.0.113.10/32): " SSH_ALLOW_CIDR || true
-      done
+    local detected_cidr input lower confirm
+    detected_cidr="$(detect_ssh_client_cidr)"
+    print_bold_warning "WARNUNG: Eine falsche SSH-CIDR kann zum kompletten SSH-Lockout führen."
+    if [[ -n "$detected_cidr" ]]; then
+      echo "Erkannte SSH-Quelladresse: $detected_cidr (mit 'auto' übernehmen)."
     fi
+    echo "Optionen: <CIDR[,CIDR...]> | auto | none | ENTER=none"
+    while true; do
+      read -r -p "SSH erlauben von CIDR: " input || true
+      input="$(trim_value "$input")"
+      lower="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
+      case "$lower" in
+        "")
+          SSH_ALLOW_CIDR=""
+          break
+          ;;
+        auto)
+          if [[ -n "$detected_cidr" ]]; then
+            prompt_yes_no confirm "RISIKO-BESTÄTIGUNG: SSH nur von ${detected_cidr} erlauben? (Lockout möglich bei Fehler/IP-Wechsel)" "no"
+            if [[ "$confirm" == "yes" ]]; then
+              SSH_ALLOW_CIDR="$detected_cidr"
+              break
+            fi
+            echo "CIDR-Einschränkung nicht übernommen. Bitte erneut wählen."
+            continue
+          fi
+          echo "Keine SSH-Quelle auto-erkannt. Bitte CIDR eingeben oder none/ENTER verwenden."
+          ;;
+        none|disable|disabled|off|open|any)
+          SSH_ALLOW_CIDR=""
+          break
+          ;;
+        *)
+          if validate_cidr_list "$input"; then
+            prompt_yes_no confirm "RISIKO-BESTÄTIGUNG: SSH nur von ${input} erlauben? (Lockout möglich bei Fehler/IP-Wechsel)" "no"
+            if [[ "$confirm" == "yes" ]]; then
+              SSH_ALLOW_CIDR="$input"
+              break
+            fi
+            echo "CIDR-Einschränkung nicht übernommen. Bitte erneut wählen."
+            continue
+          fi
+          echo "Ungültig. Erlaubt: CIDR/CSV, auto, none oder ENTER."
+          ;;
+      esac
+    done
   fi
 
   if [[ "$UFW_FLAG_SET" == "false" ]]; then
-    prompt_yes_no ENABLE_UFW "UFW verwenden? (empfohlen)" "yes"
+    prompt_yes_no ENABLE_UFW "UFW verwenden? (Optionen: yes/no, empfohlen)" "yes"
   fi
 
-  prompt_default TZ "Timezone" "$TZ"
-  prompt_default REBOOT_TIME "Auto-Reboot Uhrzeit (nur wenn AUTO_REBOOT=true)" "$REBOOT_TIME"
+  prompt_default TZ "Timezone (Option: <Area/City>, z.B. UTC)" "$TZ"
+  prompt_default REBOOT_TIME "Auto-Reboot Uhrzeit (Option: HH:MM, nur wenn AUTO_REBOOT=true)" "$REBOOT_TIME"
   validate_hhmm "$REBOOT_TIME" || die "Ungültige reboot-time: $REBOOT_TIME"
 
-  prompt_default MAILCOW_UPDATE_TIME "mailcow Auto-Update Uhrzeit (nur wenn MAILCOW_AUTOUPDATE=true)" "$MAILCOW_UPDATE_TIME"
+  prompt_default MAILCOW_UPDATE_TIME "mailcow Auto-Update Uhrzeit (Option: HH:MM, nur wenn MAILCOW_AUTOUPDATE=true)" "$MAILCOW_UPDATE_TIME"
   validate_hhmm "$MAILCOW_UPDATE_TIME" || die "Ungültige mailcow-update-time: $MAILCOW_UPDATE_TIME"
 }
 
 normalize_defaults_after_prompt() {
-  if [[ -z "$SSH_ALLOW_CIDR" ]]; then
-    SSH_ALLOW_CIDR="$(detect_ssh_client_cidr)"
-  fi
+  :
 }
 
 main() {
