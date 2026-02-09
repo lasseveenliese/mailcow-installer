@@ -2,6 +2,32 @@
 
 This repository contains a Bash script that prepares a fresh Ubuntu 24.04 installation for mailcow and installs mailcow.
 
+## Quick Start
+
+```bash
+sudo ./install-mailcow-ubuntu24.sh
+```
+
+```bash
+sudo ./install-mailcow-ubuntu24.sh \
+  --non-interactive \
+  --ufw yes \
+  --fqdn mail.example.org \
+  --ssh-pubkey "ssh-ed25519 AAAA... user@local" \
+  --admin-user admin \
+  --tz UTC \
+  --branch stable \
+  --passwordless-sudo true \
+  --auto-reboot true \
+  --reboot-time 04:00 \
+  --mailcow-autoupdate true \
+  --mailcow-update-time 03:30
+```
+
+**WARNING:** `--ssh-allow-cidr` strictly limits SSH source addresses. A wrong value can lock you out of the server. You can also lock yourself out later if your public IP changes. Add this flag manually and intentionally only.
+
+Key flags: `--ufw yes|no`, `--non-interactive`, `--ssh-allow-cidr <CIDR[,CIDR...]>` (use only your management IP/ranges), `--passwordless-sudo true|false`, `--branch stable|...`; `--ssh-pubkey` expects either the full public-key line from your local machine or a file path on the target server.
+
 ## What the script does
 
 * Creates an admin user (default: `admin`)

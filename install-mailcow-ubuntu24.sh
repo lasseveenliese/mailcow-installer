@@ -51,13 +51,13 @@ Usage:
 
 Required (interactive if missing, außer --non-interactive):
   --fqdn <mail.example.org>                 Mailcow FQDN (MAILCOW_HOSTNAME)
-  --ssh-pubkey <path|keyline>              SSH Public Key (für admin)
+  --ssh-pubkey <path|keyline>              SSH Public Key für admin
 
 Optional:
   --mailcow-dir <dir>                      Default: $MAILCOW_DIR
   --admin-user <name>                      Default: $ADMIN_USER
   --tz <Area/City>                         Default: $TZ_DEFAULT
-  --ssh-allow-cidr <CIDR[,CIDR...]>        Default: auto-detect from SSH_CONNECTION (falls möglich)
+  --ssh-allow-cidr <CIDR[,CIDR...]>        Default: auto-detect from SSH_CONNECTION (falls möglich); ACHTUNG: falscher Wert kann SSH-Lockout verursachen
   --ufw yes|no                             Ohne Flag: interaktiv Abfrage (Enter=yes), non-interactive => yes
   --passwordless-sudo true|false           Default: $PASSWORDLESS_SUDO
   --auto-reboot true|false                 Default: $AUTO_REBOOT
@@ -73,7 +73,7 @@ Optional:
 Examples:
   sudo bash install-mailcow-ubuntu24.sh \\
     --fqdn mail.example.org \\
-    --ssh-pubkey ~/.ssh/id_ed25519.pub \\
+    --ssh-pubkey "ssh-ed25519 AAAA... user@local" \\
     --ufw no \\
     --auto-reboot true --reboot-time 04:00 \\
     --mailcow-autoupdate true --mailcow-update-time 03:30
@@ -81,8 +81,8 @@ Examples:
   sudo bash install-mailcow-ubuntu24.sh \\
     --non-interactive \\
     --fqdn mail.example.org \\
-    --ssh-pubkey ~/.ssh/id_ed25519.pub \\
-    --ssh-allow-cidr 203.0.113.10/32
+    --ssh-pubkey "ssh-ed25519 AAAA... user@local" \\
+    --ssh-allow-cidr <DEINE_MANAGEMENT_IP/32>
 
 EOF
 }
@@ -179,6 +179,14 @@ validate_mailcow_dir() {
   MAILCOW_DIR="$normalized"
 }
 
+validate_ssh_public_key() {
+  local key="$1"
+  [[ -n "$key" ]] || return 1
+  [[ "$key" != *$'\n'* ]] || return 1
+
+  [[ "$key" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com)[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?$ ]]
+}
+
 validate_inputs() {
   is_true_or_false "$UFW_FLAG_SET" || die "Ungültiger interner Zustand: UFW_FLAG_SET=$UFW_FLAG_SET"
   [[ "$ENABLE_UFW" == "yes" || "$ENABLE_UFW" == "no" ]] || die "Ungültig: --ufw $ENABLE_UFW"
@@ -199,6 +207,7 @@ validate_inputs() {
 
   [[ "$MAILCOW_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || die "Ungültiger Branch-Name: $MAILCOW_BRANCH"
   [[ "$FQDN" =~ ^[A-Za-z0-9.-]+$ ]] || die "Ungültiger FQDN: $FQDN"
+  validate_ssh_public_key "$SSH_PUBKEY" || die "Ungültiger --ssh-pubkey. Erwarte eine komplette OpenSSH-Public-Key-Zeile (z.B. ssh-ed25519 AAAA... user@local). Wenn ein Pfad genutzt wird, ist er server-lokal."
 
   if [[ -n "$SSH_ALLOW_CIDR" ]]; then
     validate_cidr_list "$SSH_ALLOW_CIDR" || die "Ungültig: --ssh-allow-cidr (erwarte CIDR oder CSV-Liste aus CIDRs)"
@@ -211,12 +220,16 @@ validate_inputs() {
 
 read_pubkey() {
   local in="$1"
+  local key=""
   if [[ -f "$in" ]]; then
-    cat "$in"
+    key="$(awk 'NF && $1 !~ /^#/ {print; exit}' "$in")"
+    [[ -n "$key" ]] || die "SSH Public Key Datei ist leer/ungültig: $in"
   else
-    # könnte auch eine Keyline sein
-    echo "$in"
+    key="$in"
   fi
+
+  key="$(printf '%s' "$key" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  echo "$key"
 }
 
 is_ubuntu_2404() {
@@ -727,7 +740,7 @@ interactive_missing() {
 
   if [[ -z "$SSH_PUBKEY" ]]; then
     local in=""
-    read -r -p "SSH Public Key (Pfad oder Keyline): " in || true
+    read -r -p "SSH Public Key für admin (Keyline vom lokalen Rechner einfügen; Pfad ist server-lokal): " in || true
     [[ -n "$in" ]] || die "--ssh-pubkey ist erforderlich"
     SSH_PUBKEY="$(read_pubkey "$in")"
   fi
