@@ -30,7 +30,7 @@ Dieses Repo enthält ein Bash-Skript, das eine frische Ubuntu 24.04-Installation
   * systemd timer (Default: 03:30) führt `update.sh` aus
 * Sichere Defaults:
 
-  * UFW wird standardmäßig aktiviert (wenn nicht per Flag deaktiviert)
+  * UFW wird ohne --ufw-Flag interaktiv abgefragt (Enter = aktivieren); mit --non-interactive ohne Flag wird UFW aktiviert
   * SSH-Freischaltung erwartet ein konkretes CIDR (auto-detect per SSH_CONNECTION, sonst Abfrage)
   * Für Automation steht `--non-interactive` zur Verfügung (ohne Prompts, mit klaren Fehlern bei fehlenden Pflichtwerten)
 

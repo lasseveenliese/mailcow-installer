@@ -23,7 +23,8 @@ MAILCOW_UPDATE_TIME_DEFAULT="03:30"
 FQDN=""
 TZ="$TZ_DEFAULT"
 SSH_PUBKEY=""
-ENABLE_UFW="ask"              # yes|no|ask (ask -> default yes)
+ENABLE_UFW="yes"              # yes|no
+UFW_FLAG_SET="false"          # true|false (ob --ufw explizit gesetzt wurde)
 SSH_ALLOW_CIDR=""             # z.B. "203.0.113.10/32"
 AUTO_REBOOT="true"            # true|false
 REBOOT_TIME="$REBOOT_TIME_DEFAULT"
@@ -57,7 +58,7 @@ Optional:
   --admin-user <name>                      Default: $ADMIN_USER
   --tz <Area/City>                         Default: $TZ_DEFAULT
   --ssh-allow-cidr <CIDR[,CIDR...]>        Default: auto-detect from SSH_CONNECTION (falls möglich)
-  --ufw yes|no                             Default: ask (ask => yes)
+  --ufw yes|no                             Ohne Flag: interaktiv Abfrage (Enter=yes), non-interactive => yes
   --passwordless-sudo true|false           Default: $PASSWORDLESS_SUDO
   --auto-reboot true|false                 Default: $AUTO_REBOOT
   --reboot-time HH:MM                      Default: $REBOOT_TIME_DEFAULT
@@ -179,7 +180,8 @@ validate_mailcow_dir() {
 }
 
 validate_inputs() {
-  [[ "$ENABLE_UFW" == "yes" || "$ENABLE_UFW" == "no" || "$ENABLE_UFW" == "ask" ]] || die "Ungültig: --ufw $ENABLE_UFW"
+  is_true_or_false "$UFW_FLAG_SET" || die "Ungültiger interner Zustand: UFW_FLAG_SET=$UFW_FLAG_SET"
+  [[ "$ENABLE_UFW" == "yes" || "$ENABLE_UFW" == "no" ]] || die "Ungültig: --ufw $ENABLE_UFW"
   is_true_or_false "$PASSWORDLESS_SUDO" || die "Ungültig: --passwordless-sudo $PASSWORDLESS_SUDO"
   is_true_or_false "$AUTO_REBOOT" || die "Ungültig: --auto-reboot $AUTO_REBOOT"
   is_true_or_false "$MAILCOW_AUTOUPDATE" || die "Ungültig: --mailcow-autoupdate $MAILCOW_AUTOUPDATE"
@@ -686,7 +688,7 @@ parse_args() {
       --tz) TZ="$2"; shift 2 ;;
       --ssh-pubkey) SSH_PUBKEY="$(read_pubkey "$2")"; shift 2 ;;
       --ssh-allow-cidr) SSH_ALLOW_CIDR="$2"; shift 2 ;;
-      --ufw) ENABLE_UFW="$2"; shift 2 ;;
+      --ufw) ENABLE_UFW="$2"; UFW_FLAG_SET="true"; shift 2 ;;
       --passwordless-sudo) PASSWORDLESS_SUDO="$2"; shift 2 ;;
       --auto-reboot) AUTO_REBOOT="$2"; shift 2 ;;
       --reboot-time) REBOOT_TIME="$2"; shift 2 ;;
@@ -707,7 +709,7 @@ interactive_missing() {
     [[ -n "$FQDN" ]] || die "--non-interactive: --fqdn ist erforderlich"
     [[ -n "$SSH_PUBKEY" ]] || die "--non-interactive: --ssh-pubkey ist erforderlich"
 
-    if [[ "$ENABLE_UFW" == "ask" ]]; then
+    if [[ "$UFW_FLAG_SET" == "false" ]]; then
       ENABLE_UFW="yes"
     fi
 
@@ -741,7 +743,7 @@ interactive_missing() {
     fi
   fi
 
-  if [[ "$ENABLE_UFW" == "ask" ]]; then
+  if [[ "$UFW_FLAG_SET" == "false" ]]; then
     prompt_yes_no ENABLE_UFW "UFW verwenden? (empfohlen)" "yes"
   fi
 
@@ -754,10 +756,6 @@ interactive_missing() {
 }
 
 normalize_defaults_after_prompt() {
-  if [[ "$ENABLE_UFW" == "ask" ]]; then
-    ENABLE_UFW="yes"
-  fi
-
   if [[ -z "$SSH_ALLOW_CIDR" ]]; then
     SSH_ALLOW_CIDR="$(detect_ssh_client_cidr)"
   fi

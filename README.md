@@ -30,7 +30,7 @@ This repository contains a Bash script that prepares a fresh Ubuntu 24.04 instal
   * a systemd timer (default: 03:30) runs `update.sh`
 * Secure defaults:
 
-  * UFW is enabled by default (unless disabled via flag)
+  * Without --ufw, UFW is prompted interactively (Enter = enable); with --non-interactive and no flag, UFW is enabled
   * SSH access expects a specific CIDR (auto-detected from `SSH_CONNECTION`, otherwise prompted)
   * `--non-interactive` is available for automation (no prompts, clear errors on missing required values)
 
