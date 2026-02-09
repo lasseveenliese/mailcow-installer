@@ -104,6 +104,28 @@ is_true_or_false() {
   [[ "$1" == "true" || "$1" == "false" ]]
 }
 
+normalize_yes_no_value() {
+  local val
+  val="$(trim_value "$1")"
+  val="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
+  case "$val" in
+    y|yes) echo "yes" ;;
+    n|no)  echo "no" ;;
+    *)     echo "$1" ;;
+  esac
+}
+
+normalize_true_false_value() {
+  local val
+  val="$(trim_value "$1")"
+  val="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
+  case "$val" in
+    y|yes|true)  echo "true" ;;
+    n|no|false)  echo "false" ;;
+    *)           echo "$1" ;;
+  esac
+}
+
 prompt_default() {
   local var_name="$1" prompt="$2" def="$3"
   local val=""
@@ -119,13 +141,14 @@ trim_value() {
 
 prompt_yes_no() {
   local var_name="$1" prompt="$2" def="$3"
-  local val=""
+  local val="" norm=""
   while true; do
     read -r -p "$prompt [${def}]: " val || true
     [[ -z "$val" ]] && val="$def"
-    case "$val" in
-      y|Y|yes|YES) printf -v "$var_name" "yes"; return 0;;
-      n|N|no|NO)   printf -v "$var_name" "no";  return 0;;
+    norm="$(normalize_yes_no_value "$val")"
+    case "$norm" in
+      yes) printf -v "$var_name" "yes"; return 0;;
+      no)  printf -v "$var_name" "no";  return 0;;
       *) echo "Bitte yes/no eingeben.";;
     esac
   done
@@ -133,13 +156,14 @@ prompt_yes_no() {
 
 prompt_true_false() {
   local var_name="$1" prompt="$2" def="$3"
-  local val=""
+  local val="" norm=""
   while true; do
     read -r -p "$prompt [${def}]: " val || true
     [[ -z "$val" ]] && val="$def"
-    case "$val" in
-      y|Y|yes|YES|true|TRUE)   printf -v "$var_name" "true";  return 0;;
-      n|N|no|NO|false|FALSE)   printf -v "$var_name" "false"; return 0;;
+    norm="$(normalize_true_false_value "$val")"
+    case "$norm" in
+      true)  printf -v "$var_name" "true";  return 0;;
+      false) printf -v "$var_name" "false"; return 0;;
       *) echo "Bitte yes/no oder true/false eingeben.";;
     esac
   done
@@ -838,14 +862,14 @@ parse_args() {
       --tz) TZ="$2"; TZ_FLAG_SET="true"; shift 2 ;;
       --ssh-pubkey) SSH_PUBKEY="$(read_pubkey "$2")"; shift 2 ;;
       --ssh-allow-cidr) SSH_ALLOW_CIDR="$(normalize_ssh_allow_cidr_value "$2")"; shift 2 ;;
-      --ufw) ENABLE_UFW="$2"; UFW_FLAG_SET="true"; shift 2 ;;
-      --passwordless-sudo) PASSWORDLESS_SUDO="$2"; shift 2 ;;
-      --auto-reboot) AUTO_REBOOT="$2"; AUTO_REBOOT_FLAG_SET="true"; shift 2 ;;
+      --ufw) ENABLE_UFW="$(normalize_yes_no_value "$2")"; UFW_FLAG_SET="true"; shift 2 ;;
+      --passwordless-sudo) PASSWORDLESS_SUDO="$(normalize_true_false_value "$2")"; shift 2 ;;
+      --auto-reboot) AUTO_REBOOT="$(normalize_true_false_value "$2")"; AUTO_REBOOT_FLAG_SET="true"; shift 2 ;;
       --reboot-time) REBOOT_TIME="$2"; shift 2 ;;
-      --mailcow-autoupdate) MAILCOW_AUTOUPDATE="$2"; MAILCOW_AUTOUPDATE_FLAG_SET="true"; shift 2 ;;
+      --mailcow-autoupdate) MAILCOW_AUTOUPDATE="$(normalize_true_false_value "$2")"; MAILCOW_AUTOUPDATE_FLAG_SET="true"; shift 2 ;;
       --mailcow-update-time) MAILCOW_UPDATE_TIME="$2"; shift 2 ;;
-      --skip-ping-check) SKIP_PING_CHECK="$2"; shift 2 ;;
-      --hello-world) RUN_HELLO_WORLD="$2"; shift 2 ;;
+      --skip-ping-check) SKIP_PING_CHECK="$(normalize_true_false_value "$2")"; shift 2 ;;
+      --hello-world) RUN_HELLO_WORLD="$(normalize_true_false_value "$2")"; shift 2 ;;
       --branch) MAILCOW_BRANCH="$2"; shift 2 ;;
       --purge-existing) PURGE_EXISTING="$2"; shift 2 ;;
       --) shift; break ;;
