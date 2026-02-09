@@ -740,7 +740,7 @@ interactive_missing() {
 
   if [[ -z "$SSH_PUBKEY" ]]; then
     local in=""
-    read -r -p "SSH Public Key für admin (Keyline vom lokalen Rechner einfügen; Pfad ist server-lokal): " in || true
+    read -r -p "SSH Public Key für admin (Key vom lokalen Rechner einfügen): " in || true
     [[ -n "$in" ]] || die "--ssh-pubkey ist erforderlich"
     SSH_PUBKEY="$(read_pubkey "$in")"
   fi
